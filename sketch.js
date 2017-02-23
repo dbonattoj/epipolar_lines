@@ -197,7 +197,7 @@ function setup() {
   dataset_menu.value(dir);
   dataset_menu.changed(function() {
     var new_dir = dataset_menu.value();
-    window.location = "/?" + new_dir;
+    window.location = "?" + new_dir;
   });
 
   background(255);
