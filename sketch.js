@@ -1,34 +1,45 @@
 // config:
-var dir = "poznan_blocks";
+var dir = "ulb-2017-02-20";
+if(location.search) dir = location.search.substring(1);
 var left = "L";
 var right = "R";
 var ext = ".jpg";
 /////
 
-if(location.search) dir = location.search.substring(1);
-
+var datasets = [
+  "poznan_blocks",
+  "ulb-2016-05-06-raw",
+  "ulb-2016-07-26-raw",
+  "ulb-2016-07-26-rectified",
+  "ulb-2017-02-20"
+];
 
 var param;
 var left_im, right_im;
 
-var l_K, l_Rt, r_K, r_Rt, w, h, sc, left_im_og, right_im_og;
+// camera parameters
+var l_K, l_Rt, r_K, r_Rt, w, h;
 var l_K_inv, l_Rt_inv, r_K_inv, r_Rt_inv;
 var z_far, z_near;
-var inv_z;
 
-var pt_col = [255, 0, 0];
+// user interface
+var left_im_position, right_im_position, image_scale;
+var point_color = [255, 0, 0];
 var pt_rad = 5;
-var ln_col = [255, 0, 0];
-var ln_w = 3;
-
-var l_pt = [10.0, 10.0];
-var r_pt = [10.0, 10.0];
-var r_ln = [0.0, 0.0, 0.0, 0.0];
-var z = 0.0;
-var projected_depth = 0.0;
-
+var line_double = true;
+var line_color = [255, 0, 0];
+var line_width = 1;
 var zslider;
 var zslider_max = 1000;
+var dataset_menu;
+
+// ui state
+var left_point = [10.0, 10.0];
+var right_point = [10.0, 10.0];
+var right_epipolar_line = [0.0, 0.0, 0.0, 0.0];
+var z = 0.0; // orthogonal distance
+var d = 0.0; // projected depth (from 0 to 1)
+
 
 function essentialMatrix() {
   var poseTransformation = numeric.dot(l_Rt, r_Rt_inv);
@@ -53,7 +64,7 @@ function fundamentalMatrix() {
 
 function calculateEpipolarLine() {
   var F = fundamentalMatrix();
-  var x_L = l_pt[0], y_L = l_pt[1];
+  var x_L = left_point[0], y_L = left_point[1];
   function y_R(x_R) {
     var a = -F[2][2] - F[0][2]*x_L - F[2][0]*x_R - F[0][0]*x_L*x_R - F[1][2]*y_L - F[1][0]*x_R*y_L;
     var b = F[2][1] + F[0][1]*x_L + F[1][1]*y_L;
@@ -63,44 +74,63 @@ function calculateEpipolarLine() {
   var x1 = 0, x2 = w;
   var y1 = y_R(x1), y2 = y_R(x2);
 
-  x1 = x1*sc + right_im_og[0];
-  x2 = x2*sc + right_im_og[0];
-  y1 = y1*sc + right_im_og[1];
-  y2 = y2*sc + right_im_og[1];
+  // put it into screen pixel coordinates for user interface
+  x1 = x1*image_scale + right_im_position[0];
+  x2 = x2*image_scale + right_im_position[0];
+  y1 = y1*image_scale + right_im_position[1];
+  y2 = y2*image_scale + right_im_position[1];
   
-  r_ln = [x1, y1, x2, y2];
+  right_epipolar_line = [x1, y1, x2, y2];
 }
 
 function projMat(K) {
+  // depth projection: z_near --> d = 0.0
+  //                   z_far --> d = 1.0
+
+  var d_near = 0.0;
+  var d_far = 1.0;
+
   var z_diff = z_far - z_near;
-  var sign = (inv_z ? -1.0 : 1.0);
+  var offset = ((d_far * z_far) - (d_near * z_near)) / z_diff;
+  var factor = ((d_near - d_far) * z_near * z_far) / z_diff;
+
   return [
     [K[0][0], 0.0, K[0][2], 0.0],
     [0.0, K[1][1], K[1][2], 0.0],
-    [0.0, 0.0, sign * z_far/z_diff, -(z_far * z_near)/z_diff],
-    [0.0, 0.0, sign, 0.0]
+    [0.0, 0.0, offset, factor],
+    [0.0, 0.0, 1.0, 0.0]
   ];
 }
 
 function calculateCorrespondingPoint() {
+  // projection matrix for left and right camera
+  // = 4x4 matrix in homogeneous coordinates (x, y, d, 1.0) = P * v
+  //                                        x, y = pixel coordinates in image
+  //                                        d = projected depth value
+  //                                        v = (x,y,z) 3D coordinates in view coordinate system (with the camera at origin)
   var l_proj = projMat(l_K);
   var r_proj = projMat(r_K);
   
   var l_proj_inv = numeric.inv(l_proj);
   var r_proj_inv = numeric.inv(r_proj);
 
-  var H = numeric.dot(r_proj, numeric.dot(r_Rt, numeric.dot(l_Rt_inv, r_proj_inv)));
+  // H = homography matrix = r_proj * r_Rt * l_Rt_inv * r_proj_inv
+  // = 4x4 matrix, maps (x, y, d, 1.0) on left camera to (x, y, d) on right camera
+  var H = numeric.dot(r_proj, numeric.dot(r_Rt, numeric.dot(l_Rt_inv, l_proj_inv)));
 
-  var x_L = l_pt[0], y_L = l_pt[1];
-
-  var x_L_h = [x_L, y_L, z, 1.0];
+  // do matrix-vector multiplication in homographic coordinates
+  var x_L = left_point[0], y_L = left_point[1];
+  var x_L_h = [x_L, y_L, d, 1.0];
   var x_R_h = numeric.dot(H, x_L_h);
   x_R_h[0] /= x_R_h[3];
   x_R_h[1] /= x_R_h[3];
-  r_pt = [x_R_h[0], x_R_h[1]];
+  
+  // resulting pixel coordinates for right point
+  right_point = [x_R_h[0], x_R_h[1]];
 
-  var Wp = numeric.dot(l_proj_inv, x_L_h);
-  projected_depth = Wp[2] / Wp[3];
+  // calculate orthogonal distance z: project into view coordinate system, and get z coordinate
+  var v_L = numeric.dot(l_proj_inv, x_L_h);
+  z = v_L[2] / v_L[3];
 }
 
 function preload() {
@@ -124,42 +154,66 @@ function convertRt(Rt_) {
 }
 
 function setup() {
+  // read config
   l_K = param[left+"_K"];
   l_Rt = param[left+"_Rt"];
   r_K = param[right+"_K"];
   r_Rt = param[right+"_Rt"];
   w = param["w"];
   h = param["h"];
-  sc = param["scale"];
-  left_im_og = [10, 10];
-  right_im_og = [w*sc + 20, 10];
-  inv_z = param["inv_z"];
+  image_scale = param["scale"];
+  left_im_position = [10, 10];
+  right_im_position = [w*image_scale + 20, 10];
   z_near = param["z_near"];
   z_far = param["z_far"];
 
-  
+  // convert exterinsics from MPEG to standard format if necessary
   if(param["mpeg_intrinsic"]) {
     l_Rt = convertRt(l_Rt);
     r_Rt = convertRt(r_Rt);
   }
 
+  // precompute inverse matrices
   l_K_inv = numeric.inv(l_K);
   l_Rt_inv = numeric.inv(l_Rt);
   r_K_inv = numeric.inv(r_K);
   r_Rt_inv = numeric.inv(r_Rt);
-
-  createCanvas(max(left_im_og[0], right_im_og[0]) + w*sc + 10, max(left_im_og[1], right_im_og[1]) + h*sc + 10 + 40);
+  
+  // setup ui
+  createCanvas(
+    right_im_position[0] + w*image_scale + 10,
+    right_im_position[1] + h*image_scale + 10 + 100
+  );
 
   zslider = createSlider(0, 1000, 0);
-  zslider.position(30, h*sc + 40);
+  zslider.position(120, h*image_scale + 40);
   zslider.input(updateFromSlider);
 
+  dataset_menu = createSelect();
+  dataset_menu.position(right_im_position[0], h*image_scale + 40);
+  for(var i = 0; i < datasets.length; ++i) {
+    dataset_menu.option(datasets[i]);
+  }
+  dataset_menu.value(dir);
+  dataset_menu.changed(function() {
+    var new_dir = dataset_menu.value();
+    window.location = "/?" + new_dir;
+  });
+
   background(255);
+
+  
+  // initial state
+  z = z_near;
+  d = 0.0;
+  left_point = [100.0, 100.0];
+  calculateCorrespondingPoint();
+  calculateEpipolarLine();
 }
 
 
 function updateFromSlider() {
-  z = zslider.value() / zslider_max;
+  d = zslider.value() / zslider_max;
   calculateCorrespondingPoint();
   draw();
 }
@@ -170,50 +224,54 @@ function draw() {
   clear();
   
   // images
-  image(left_im, 0, 0, w, h, left_im_og[0], left_im_og[1], w*sc, h*sc);
-  image(right_im, 0, 0, w, h, right_im_og[0], right_im_og[1], w*sc, h*sc);
+  image(left_im, 0, 0, w, h, left_im_position[0], left_im_position[1], w*image_scale, h*image_scale);
+  image(right_im, 0, 0, w, h, right_im_position[0], right_im_position[1], w*image_scale, h*image_scale);
   
   // left pt
   noStroke();
-  fill(pt_col);
-  var l_x = l_pt[0]*sc + left_im_og[0];
-  var l_y = l_pt[1]*sc + left_im_og[1];
+  fill(point_color);
+  var l_x = left_point[0]*image_scale + left_im_position[0];
+  var l_y = left_point[1]*image_scale + left_im_position[1];
   ellipse(l_x, l_y, 2*pt_rad, 2*pt_rad);
   
-  // right pt
-  noStroke();
-  fill(pt_col);
-  var r_x = r_pt[0]*sc + right_im_og[0];
-  var r_y = r_pt[1]*sc + right_im_og[1];
-  ellipse(r_x, r_y, 2*pt_rad, 2*pt_rad);
   
   // epipolar line
   noFill();
-  stroke(ln_col);
-  strokeWeight(ln_w);
-  line(r_ln[0], r_ln[1], r_ln[2], r_ln[3]);
+  if(line_double) {
+    stroke(255, 255, 255, 100);
+    strokeWeight(line_width + 3);
+    line(right_epipolar_line[0], right_epipolar_line[1], right_epipolar_line[2], right_epipolar_line[3]);
+  }
+  stroke(line_color);
+  strokeWeight(line_width);
+  line(right_epipolar_line[0], right_epipolar_line[1], right_epipolar_line[2], right_epipolar_line[3]);
+
+  // right pt
+  noStroke();
+  fill(point_color);
+  var r_x = right_point[0]*image_scale + right_im_position[0];
+  var r_y = right_point[1]*image_scale + right_im_position[1];
+  if(r_x > right_im_position[0]) ellipse(r_x, r_y, 2*pt_rad, 2*pt_rad);
+
 
   // rect
   noFill();
   stroke(0);
   strokeWeight(1);
-  rect(left_im_og[0], left_im_og[1], w*sc, h*sc);
-  rect(right_im_og[0], right_im_og[1], w*sc, h*sc);
+  rect(left_im_position[0], left_im_position[1], w*image_scale, h*image_scale);
+  rect(right_im_position[0], right_im_position[1], w*image_scale, h*image_scale);
   
   // slider text
   fill(0);
   noStroke();
-  text("d =" , 10, h*sc + 55);
-  text(floor(projected_depth * 100.0)/100.0, 220, h*sc + 55);
+  text("projected depth d: " , 10, h*image_scale + 55);
+  text("orthogonal distance z = " + floor(z * 100.0)/100.0, 400, h*image_scale + 55);
 }
 
 function updateFromMouse() {
-  if(mouseX < right_im_og[0]) {
-    l_pt[0] = (mouseX - left_im_og[0]) / sc;
-    l_pt[1] = (mouseY - left_im_og[1]) / sc;
-  } else {
-    r_pt[0] = (mouseX - right_im_og[0]) / sc;
-    r_pt[1] = (mouseY - right_im_og[1]) / sc;
+  if(mouseX < right_im_position[0]) {
+    left_point[0] = (mouseX - left_im_position[0]) / image_scale;
+    left_point[1] = (mouseY - left_im_position[1]) / image_scale;
   }
   calculateCorrespondingPoint();
   calculateEpipolarLine();
@@ -221,11 +279,11 @@ function updateFromMouse() {
 }
 
 function mousePressed() {
-  if(mouseY < h*sc + 15) updateFromMouse();
+  if(mouseY < h*image_scale + 15) updateFromMouse();
   return true;
 }
 
 function mouseDragged() {
-  if(mouseY < h*sc + 15) updateFromMouse();
+  if(mouseY < h*image_scale + 15) updateFromMouse();
   return true;
 }

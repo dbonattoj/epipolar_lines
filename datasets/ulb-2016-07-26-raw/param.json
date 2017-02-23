@@ -5,9 +5,8 @@
 
 	"mpeg_intrinsic" : false,
 
-	"z_near" : 1000.0,
-	"z_far" : 2000.0,
-	"inv_z" : false,
+	"z_near" : 500.0,
+	"z_far" : 2500.0,
 
 
 	"L_Rt" : [
